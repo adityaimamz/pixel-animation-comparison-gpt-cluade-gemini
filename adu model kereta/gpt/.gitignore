@@ -1,0 +1,4 @@
+node_modules/
+.chromium/
+output/
+__pycache__/

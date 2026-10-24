@@ -1,0 +1,13 @@
+{
+  "name": "kereta-menuju-fajar",
+  "version": "1.0.0",
+  "private": true,
+  "description": "15-second deterministic pixel-art film, entirely generated from code",
+  "scripts": {
+    "render": "node render.mjs",
+    "preview": "node render.mjs --preview"
+  },
+  "devDependencies": {
+    "playwright": "1.62.1"
+  }
+}

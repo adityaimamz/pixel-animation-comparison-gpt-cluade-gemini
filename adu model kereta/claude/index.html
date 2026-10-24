@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kereta Malam</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0b0a10; color: #d8d2c4; font: 13px/1.4 ui-monospace, Consolas, monospace; }
+  body { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; }
+  /* 270x480 ditampilkan dengan nearest-neighbor: piksel tajam */
+  #c { height: calc(100vh - 70px); aspect-ratio: 9 / 16; image-rendering: pixelated; image-rendering: crisp-edges; background: #000; }
+  #bar { display: flex; gap: 10px; align-items: center; width: min(560px, 92vw); }
+  #seek { flex: 1; }
+  button { background: #2a2433; color: inherit; border: 1px solid #4a4058; padding: 4px 10px; cursor: pointer; }
+</style>
+</head>
+<body>
+<canvas id="c" width="270" height="480"></canvas>
+<div id="bar">
+  <button id="play">putar</button>
+  <input id="seek" type="range" min="0" max="449" step="1" value="0">
+  <span id="info">f 0 / 0.00 s</span>
+</div>
+<audio id="aud" src="audio/mix.wav" preload="auto"></audio>
+
+<script src="src/timeline.js"></script>
+<script src="src/raster.js"></script>
+<script src="src/common.js"></script>
+<script src="src/train.js"></script>
+<script src="src/s1.js"></script>
+<script src="src/s2.js"></script>
+<script src="src/s3.js"></script>
+<script src="src/text.js"></script>
+<script src="src/scene.js"></script>
+<script>
+  // Preview saja. Render memakai fungsi yang sama (paintFrame) frame demi frame.
+  const ctx = document.getElementById('c').getContext('2d');
+  ctx.imageSmoothingEnabled = false;
+  const seek = document.getElementById('seek'), info = document.getElementById('info');
+  const aud = document.getElementById('aud'), btn = document.getElementById('play');
+  let playing = false, t0 = 0, start = 0;
+
+  function show(f) {
+    f = Math.max(0, Math.min(TL.FRAMES - 1, f));
+    paintFrame(ctx, f / TL.FPS);
+    seek.value = f;
+    info.textContent = 'f ' + f + ' / ' + (f / TL.FPS).toFixed(2) + ' s';
+  }
+  function tick(now) {
+    if (!playing) return;
+    const t = aud.readyState >= 2 && !aud.paused ? aud.currentTime : t0 + (now - start) / 1000;
+    const f = Math.floor(t * TL.FPS);
+    if (f >= TL.FRAMES) { playing = false; btn.textContent = 'putar'; show(TL.FRAMES - 1); return; }
+    show(f);
+    requestAnimationFrame(tick);
+  }
+  btn.onclick = () => {
+    playing = !playing;
+    btn.textContent = playing ? 'jeda' : 'putar';
+    if (playing) {
+      if (+seek.value >= TL.FRAMES - 1) seek.value = 0;
+      t0 = +seek.value / TL.FPS; start = performance.now();
+      aud.currentTime = t0; aud.play().catch(() => {});
+      requestAnimationFrame(tick);
+    } else aud.pause();
+  };
+  seek.oninput = () => { if (playing) { playing = false; aud.pause(); btn.textContent = 'putar'; } show(+seek.value); };
+  addEventListener('keydown', (e) => {
+    if (e.key === ' ') { e.preventDefault(); btn.onclick(); }
+    if (e.key === 'ArrowRight') show(+seek.value + (e.shiftKey ? 30 : 1));
+    if (e.key === 'ArrowLeft') show(+seek.value - (e.shiftKey ? 30 : 1));
+  });
+  show(0);
+</script>
+</body>
+</html>

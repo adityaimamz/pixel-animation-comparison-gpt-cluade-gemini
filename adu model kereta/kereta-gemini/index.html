@@ -1,0 +1,1382 @@
+<!DOCTYPE html>
+<html lang="id">
+
+<head>
+    <meta charset="UTF-8" />
+    <title>Kereta Malam Menuju Fajar - Pixel Art 270x480 -> 1080x1920</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        html,
+        body {
+            width: 1080px;
+            height: 1920px;
+            overflow: hidden;
+            background: #000000;
+        }
+
+        canvas {
+            display: block;
+            width: 1080px;
+            height: 1920px;
+            image-rendering: pixelated;
+            image-rendering: crisp-edges;
+        }
+    </style>
+</head>
+
+<body>
+    <canvas id="screen" width="1080" height="1920"></canvas>
+
+    <script>
+        // =========================================================================
+        // KONFIGURASI KANVAS & FRAMEBUFFER PIXEL ART MURNI (270x480 -> 1080x1920)
+        // =========================================================================
+        const W = 270;
+        const H = 480;
+        const SCALE = 4;
+
+        const screenCanvas = document.getElementById('screen');
+        const screenCtx = screenCanvas.getContext('2d', { alpha: false });
+        screenCtx.imageSmoothingEnabled = false;
+
+        const lowCanvas = document.createElement('canvas');
+        lowCanvas.width = W;
+        lowCanvas.height = H;
+        const lowCtx = lowCanvas.getContext('2d', { alpha: false });
+        lowCtx.imageSmoothingEnabled = false;
+
+        const imgData = lowCtx.createImageData(W, H);
+        const buf = imgData.data;
+
+        // Matriks Bayer 4x4 untuk dithering pixel art (tanpa gradien halus / blur)
+        const BAYER4 = [
+            [0, 8, 2, 10],
+            [12, 4, 14, 6],
+            [3, 11, 1, 9],
+            [15, 7, 13, 5]
+        ];
+
+        // =========================================================================
+        // SEEDED PRNG (Bukan Math.random)
+        // =========================================================================
+        function hashU32(seed) {
+            let x = (seed | 0) + 0x9e3779b9;
+            x = Math.imul(x ^ (x >>> 16), 0x85ebca6b);
+            x = Math.imul(x ^ (x >>> 13), 0xc2b2ae35);
+            return (x ^ (x >>> 16)) >>> 0;
+        }
+
+        function rand01(seed) {
+            return (hashU32(seed) & 0xffffff) / 0x1000000;
+        }
+
+        function randRange(seed, min, max) {
+            return min + rand01(seed) * (max - min);
+        }
+
+        function randInt(seed, min, max) {
+            return Math.floor(randRange(seed, min, max + 1));
+        }
+
+        function clamp(v, lo, hi) {
+            return v < lo ? lo : (v > hi ? hi : v);
+        }
+
+        // =========================================================================
+        // PRIMITIF PENGGAMBARAN PIXEL BULAT (INTEGER-ONLY, NO ANTI-ALIASING)
+        // =========================================================================
+        const colorCache = new Map();
+        function parseHex(hex) {
+            let c = colorCache.get(hex);
+            if (!c) {
+                const v = parseInt(hex.slice(1), 16);
+                c = [(v >> 16) & 255, (v >> 8) & 255, v & 255];
+                colorCache.set(hex, c);
+            }
+            return c;
+        }
+
+        // Clipping region aktif (berguna untuk jendela kereta di Adegan 2)
+        let clipX0 = 0, clipY0 = 0, clipX1 = W - 1, clipY1 = H - 1;
+        function setClip(x, y, w, h) {
+            clipX0 = clamp(Math.floor(x), 0, W - 1);
+            clipY0 = clamp(Math.floor(y), 0, H - 1);
+            clipX1 = clamp(Math.floor(x + w - 1), 0, W - 1);
+            clipY1 = clamp(Math.floor(y + h - 1), 0, H - 1);
+        }
+        function resetClip() {
+            clipX0 = 0; clipY0 = 0; clipX1 = W - 1; clipY1 = H - 1;
+        }
+
+        function pset(x, y, hex) {
+            const ix = x | 0;
+            const iy = y | 0;
+            if (ix < clipX0 || ix > clipX1 || iy < clipY0 || iy > clipY1) return;
+            const [r, g, b] = parseHex(hex);
+            const idx = (iy * W + ix) << 2;
+            buf[idx] = r;
+            buf[idx + 1] = g;
+            buf[idx + 2] = b;
+            buf[idx + 3] = 255;
+        }
+
+        function psetDither(x, y, hex, density) {
+            const ix = x | 0;
+            const iy = y | 0;
+            if (ix < clipX0 || ix > clipX1 || iy < clipY0 || iy > clipY1) return;
+            const threshold = (BAYER4[iy & 3][ix & 3] + 0.5) / 16;
+            if (density >= threshold) {
+                pset(ix, iy, hex);
+            }
+        }
+
+        function rect(x, y, w, h, hex) {
+            const x0 = Math.max(clipX0, x | 0);
+            const y0 = Math.max(clipY0, y | 0);
+            const x1 = Math.min(clipX1, ((x | 0) + (w | 0) - 1));
+            const y1 = Math.min(clipY1, ((y | 0) + (h | 0) - 1));
+            if (x0 > x1 || y0 > y1) return;
+            const [r, g, b] = parseHex(hex);
+            for (let py = y0; py <= y1; py++) {
+                let idx = (py * W + x0) << 2;
+                for (let px = x0; px <= x1; px++) {
+                    buf[idx] = r;
+                    buf[idx + 1] = g;
+                    buf[idx + 2] = b;
+                    buf[idx + 3] = 255;
+                    idx += 4;
+                }
+            }
+        }
+
+        function ditherRect(x, y, w, h, hexA, hexB, ratioB) {
+            const x0 = Math.max(clipX0, x | 0);
+            const y0 = Math.max(clipY0, y | 0);
+            const x1 = Math.min(clipX1, ((x | 0) + (w | 0) - 1));
+            const y1 = Math.min(clipY1, ((y | 0) + (h | 0) - 1));
+            if (x0 > x1 || y0 > y1) return;
+            const colA = parseHex(hexA);
+            const colB = parseHex(hexB);
+            for (let py = y0; py <= y1; py++) {
+                const brow = BAYER4[py & 3];
+                let idx = (py * W + x0) << 2;
+                for (let px = x0; px <= x1; px++) {
+                    const thr = (brow[px & 3] + 0.5) / 16;
+                    const c = ratioB >= thr ? colB : colA;
+                    buf[idx] = c[0];
+                    buf[idx + 1] = c[1];
+                    buf[idx + 2] = c[2];
+                    buf[idx + 3] = 255;
+                    idx += 4;
+                }
+            }
+        }
+
+        function ditherOverlayRect(x, y, w, h, hex, density) {
+            const x0 = Math.max(clipX0, x | 0);
+            const y0 = Math.max(clipY0, y | 0);
+            const x1 = Math.min(clipX1, ((x | 0) + (w | 0) - 1));
+            const y1 = Math.min(clipY1, ((y | 0) + (h | 0) - 1));
+            if (x0 > x1 || y0 > y1) return;
+            const [r, g, b] = parseHex(hex);
+            for (let py = y0; py <= y1; py++) {
+                const brow = BAYER4[py & 3];
+                for (let px = x0; px <= x1; px++) {
+                    if (density >= (brow[px & 3] + 0.5) / 16) {
+                        const idx = (py * W + px) << 2;
+                        buf[idx] = r;
+                        buf[idx + 1] = g;
+                        buf[idx + 2] = b;
+                        buf[idx + 3] = 255;
+                    }
+                }
+            }
+        }
+
+        // Garis Bresenham murni integer
+        function line(x0, y0, x1, y1, hex) {
+            let ix0 = x0 | 0, iy0 = y0 | 0;
+            const ix1 = x1 | 0, iy1 = y1 | 0;
+            const dx = Math.abs(ix1 - ix0), sx = ix0 < ix1 ? 1 : -1;
+            const dy = -Math.abs(iy1 - iy0), sy = iy0 < iy1 ? 1 : -1;
+            let err = dx + dy;
+            while (true) {
+                pset(ix0, iy0, hex);
+                if (ix0 === ix1 && iy0 === iy1) break;
+                const e2 = 2 * err;
+                if (e2 >= dy) { err += dy; ix0 += sx; }
+                if (e2 <= dx) { err += dx; iy0 += sy; }
+            }
+        }
+
+        // Lingkaran isi pixel bulat
+        function fillCircle(cx, cy, r, hex, ditherDensity = 1.0) {
+            const icx = cx | 0, icy = cy | 0, ir = r | 0;
+            const r2 = ir * ir;
+            for (let dy = -ir; dy <= ir; dy++) {
+                for (let dx = -ir; dx <= ir; dx++) {
+                    if (dx * dx + dy * dy <= r2) {
+                        if (ditherDensity >= 1.0) pset(icx + dx, icy + dy, hex);
+                        else psetDither(icx + dx, icy + dy, hex, ditherDensity);
+                    }
+                }
+            }
+        }
+
+        // =========================================================================
+        // FONT PIXEL 5x7 BITMAP ("SAMPAI" & ELEMEN STASIUN)
+        // =========================================================================
+        const FONT_5X7 = {
+            'S': [
+                "01111",
+                "10000",
+                "10000",
+                "01110",
+                "00001",
+                "00001",
+                "11110"
+            ],
+            'A': [
+                "01110",
+                "10001",
+                "10001",
+                "11111",
+                "10001",
+                "10001",
+                "10001"
+            ],
+            'M': [
+                "10001",
+                "11011",
+                "10101",
+                "10101",
+                "10001",
+                "10001",
+                "10001"
+            ],
+            'P': [
+                "11110",
+                "10001",
+                "10001",
+                "11110",
+                "10000",
+                "10000",
+                "10000"
+            ],
+            'I': [
+                "11111",
+                "00100",
+                "00100",
+                "00100",
+                "00100",
+                "00100",
+                "11111"
+            ]
+        };
+
+        function drawPixelText(text, x, y, scale, hexMain, hexShadow = null) {
+            let curX = x | 0;
+            const iy = y | 0;
+            const s = scale | 0;
+            for (let i = 0; i < text.length; i++) {
+                const ch = text[i];
+                const glyph = FONT_5X7[ch];
+                if (glyph) {
+                    for (let row = 0; row < 7; row++) {
+                        for (let col = 0; col < 5; col++) {
+                            if (glyph[row][col] === '1') {
+                                if (hexShadow) {
+                                    rect(curX + col * s + s, iy + row * s + s, s, s, hexShadow);
+                                }
+                                rect(curX + col * s, iy + row * s, s, s, hexMain);
+                            }
+                        }
+                    }
+                }
+                curX += 6 * s;
+            }
+        }
+
+        // =========================================================================
+        // KOMPONEN VISUAL BERSAMA (LANGIT, BUKIT, POHON, TIANG LISTRIK, KERETA)
+        // =========================================================================
+
+        // Menggambar pita langit bertingkat dengan sambungan Bayer dithering
+        function drawSteppedSky(yMax, bands) {
+            const n = bands.length;
+            const bandH = Math.ceil(yMax / n);
+            for (let i = 0; i < n; i++) {
+                const by0 = i * bandH;
+                const bh = Math.min(bandH, yMax - by0);
+                if (bh <= 0) break;
+                rect(0, by0, W, bh, bands[i]);
+                // Dither transisi antar pita langit
+                if (i < n - 1) {
+                    const ditherH = Math.min(8, Math.floor(bh / 2));
+                    const dy0 = by0 + bh - ditherH;
+                    ditherRect(0, dy0, W, Math.ceil(ditherH / 2), bands[i], bands[i + 1], 0.25);
+                    ditherRect(0, dy0 + Math.ceil(ditherH / 2), W, Math.floor(ditherH / 2), bands[i], bands[i + 1], 0.65);
+                }
+            }
+        }
+
+        // Bintang malam berbasis seed
+        function drawStars(yMax, densityFactor) {
+            const count = Math.floor(45 * densityFactor);
+            for (let i = 0; i < count; i++) {
+                const sx = randInt(1000 + i * 17, 4, W - 5);
+                const sy = randInt(2000 + i * 31, 6, yMax - 10);
+                const bright = (i % 4 === 0) ? '#dce8ff' : '#7a8fb8';
+                pset(sx, sy, bright);
+            }
+        }
+
+        // Lapisan 1 Parallax: Bukit Jauh
+        function drawHillsLayer(scrollX, baseY, amp, freq, colMain, colHighlight = null) {
+            const s = Math.floor(scrollX);
+            for (let x = 0; x < W; x++) {
+                const wx = x + s;
+                const h1 = Math.sin(wx * freq) * amp;
+                const h2 = Math.cos(wx * freq * 2.1 + 1.3) * (amp * 0.45);
+                const h3 = Math.sin(wx * freq * 0.5 - 0.7) * (amp * 0.35);
+                const topY = Math.floor(baseY - (h1 + h2 + h3));
+                if (topY < H) {
+                    rect(x, topY, 1, H - topY, colMain);
+                    if (colHighlight) {
+                        pset(x, topY, colHighlight);
+                        if ((wx & 1) === 0) pset(x, topY + 1, colHighlight);
+                    }
+                }
+            }
+        }
+
+        // Lapisan 2 Parallax: Pepohonan Pedesaan
+        function drawTreesLayer(scrollX, groundY, colTrunk, colLeafDark, colLeafMid, colLeafLight) {
+            const s = Math.floor(scrollX);
+            const cellW = 18;
+            const firstCell = Math.floor(s / cellW) - 2;
+            const numCells = Math.ceil(W / cellW) + 4;
+
+            // Tanah siluet dasar pohon
+            rect(0, groundY, W, 16, colLeafDark);
+
+            for (let c = firstCell; c < firstCell + numCells; c++) {
+                const seed = c * 7919 + 512;
+                const treeType = hashU32(seed) % 3;
+                const offsetX = randInt(seed + 1, -4, 4);
+                const treeH = randInt(seed + 2, 22, 38);
+                const tx = c * cellW - s + offsetX;
+                const ty = groundY;
+
+                if (tx < -25 || tx > W + 25) continue;
+
+                // Batang pohon
+                rect(tx - 1, ty - 8, 3, 9, colTrunk);
+
+                if (treeType === 0 || treeType === 1) {
+                    // Pohon cemara / pinus bertingkat
+                    const tiers = 4;
+                    for (let k = 0; k < tiers; k++) {
+                        const tierY = ty - 6 - Math.floor((k * treeH) / tiers);
+                        const halfW = Math.max(2, Math.floor((tiers - k) * 3.2));
+                        const tierH = Math.floor(treeH / tiers) + 4;
+                        for (let row = 0; row < tierH; row++) {
+                            const curW = Math.max(1, Math.floor(halfW * (row / tierH)));
+                            const py = tierY - tierH + row;
+                            rect(tx - curW, py, curW * 2 + 1, 1, colLeafDark);
+                            rect(tx - curW + 1, py, Math.max(1, curW - 1), 1, colLeafMid);
+                            if (colLeafLight && row < 3) pset(tx - curW + 1, py, colLeafLight);
+                        }
+                    }
+                } else {
+                    // Pohon rindang bulat
+                    const cy = ty - Math.floor(treeH * 0.65);
+                    const rad = Math.floor(treeH * 0.34);
+                    fillCircle(tx, cy, rad, colLeafDark);
+                    fillCircle(tx - 3, cy - 2, Math.max(3, rad - 2), colLeafMid);
+                    if (colLeafLight) fillCircle(tx - 5, cy - 4, Math.max(2, rad - 5), colLeafLight);
+                }
+            }
+        }
+
+        // Lapisan 3 Parallax: Tiang Listrik Dekat & Kabel Melengkung
+        function drawUtilityPolesLayer(scrollX, poleBaseY, poleTopY, colPole, colWire, colInsulator) {
+            const spacing = 96;
+            const s = Math.floor(scrollX);
+            const firstIdx = Math.floor(s / spacing) - 1;
+            const count = Math.ceil(W / spacing) + 3;
+
+            for (let i = firstIdx; i < firstIdx + count; i++) {
+                const px = i * spacing - s;
+                const nextPx = (i + 1) * spacing - s;
+
+                // Gambar 2 jalur kabel listrik melengkung ke tiang berikutnya
+                for (let wx = Math.max(0, px); wx <= Math.min(W - 1, nextPx); wx++) {
+                    const u = (wx - px) / spacing;
+                    const sag = Math.floor(Math.sin(u * Math.PI) * 9);
+                    pset(wx, poleTopY + 5 + sag, colWire);
+                    pset(wx, poleTopY + 13 + sag, colWire);
+                }
+
+                if (px >= -12 && px <= W + 12) {
+                    // Tiang utama
+                    rect(px - 2, poleTopY, 4, poleBaseY - poleTopY, colPole);
+                    pset(px - 2, poleTopY, colInsulator);
+                    // Palang horizontal atas & bawah
+                    rect(px - 10, poleTopY + 4, 20, 2, colPole);
+                    rect(px - 8, poleTopY + 12, 16, 2, colPole);
+                    // Isolator keramik kecil
+                    pset(px - 9, poleTopY + 3, colInsulator);
+                    pset(px + 8, poleTopY + 3, colInsulator);
+                    pset(px - 7, poleTopY + 11, colInsulator);
+                    pset(px + 6, poleTopY + 11, colInsulator);
+                }
+            }
+        }
+
+        // Rel Kereta & Bantalan Kayu
+        function drawRailwayTrack(scrollX, railY, isNight = true) {
+            const colBallast1 = isNight ? '#161c2b' : '#4a4754';
+            const colBallast2 = isNight ? '#222b40' : '#696473';
+            const colSleeper = isNight ? '#10131d' : '#3d2b27';
+            const colRail = isNight ? '#6e85a6' : '#a8b8cc';
+            const colRailDark = isNight ? '#323f54' : '#576273';
+
+            // Tanggul batu kricak (ballast)
+            rect(0, railY, W, 14, colBallast1);
+            ditherRect(0, railY, W, 5, colBallast1, colBallast2, 0.35);
+
+            // Bantalan rel (sleepers)
+            const s = Math.floor(scrollX);
+            const step = 8;
+            const startX = -((s % step) + step) % step;
+            for (let x = startX; x < W; x += step) {
+                rect(x, railY + 1, 4, 4, colSleeper);
+            }
+
+            // Batang rel baja
+            rect(0, railY - 1, W, 1, colRail);
+            rect(0, railY, W, 1, colRailDark);
+        }
+
+        // Rangkaian Kereta Api (Lokomotif di Kanan + 3 Gerbong di Kiri, melaju Kiri -> Kanan)
+        // locoFrontX adalah posisi ujung depan lokomotif
+        function drawTrainSideView(locoFrontX, railY, t, windowBrightness = 1.0, smokeDensity = 1.0, wheelPhase = null) {
+            const fx = Math.floor(locoFrontX);
+            const base = railY - 1; // posisi roda menapak rel
+            const wPhase = wheelPhase !== null ? wheelPhase : t * 18;
+
+            // Palet warna badan kereta
+            const colBodyDark = '#182030';
+            const colBodyMain = '#243147';
+            const colBodyTrim = '#8c6f3e';
+            const colRoof = '#394a68';
+            const colUnder = '#101520';
+            const colWheel = '#3e4c63';
+            const colWheelRim = '#7b8fa8';
+
+            // Palet warna lampu jendela sesuai tingkat redup (1.0 = malam hangat -> 0.0 = pagi terang)
+            let colWinCore, colWinMid, colWinFrame;
+            if (windowBrightness > 0.8) {
+                colWinCore = '#fff19e';
+                colWinMid = '#ffb838';
+                colWinFrame = '#c46d27';
+            } else if (windowBrightness > 0.55) {
+                colWinCore = '#ffd278';
+                colWinMid = '#d98836';
+                colWinFrame = '#8f4d28';
+            } else if (windowBrightness > 0.3) {
+                colWinCore = '#cfa46b';
+                colWinMid = '#9c6e44';
+                colWinFrame = '#5e4235';
+            } else {
+                colWinCore = '#8ca4c4';
+                colWinMid = '#6981a1';
+                colWinFrame = '#3e4d63';
+            }
+
+            // ---------------------------------------------------------------------
+            // 1. LOKOMOTIF UAP KLASIK (Panjang 64px: dari fx - 64 sampai fx)
+            // ---------------------------------------------------------------------
+            const lx = fx - 64;
+            // Rangka bawah
+            rect(lx, base - 7, 60, 4, colUnder);
+            rect(lx, base - 8, 61, 1, colBodyTrim);
+            // Kabin masinis (belakang lokomotif: lx..lx+20)
+            rect(lx + 2, base - 28, 20, 20, colBodyMain);
+            rect(lx, base - 30, 23, 2, colRoof);
+            // Jendela kabin masinis
+            rect(lx + 6, base - 24, 11, 8, colWinMid);
+            rect(lx + 7, base - 23, 9, 6, colWinCore);
+            // Tangki ketel uap (boiler: lx+22..lx+56)
+            rect(lx + 22, base - 23, 35, 15, colBodyDark);
+            rect(lx + 22, base - 22, 34, 6, colBodyMain);
+            // Sabuk kuningan ketel
+            rect(lx + 31, base - 23, 2, 15, colBodyTrim);
+            rect(lx + 43, base - 23, 2, 15, colBodyTrim);
+            // Kubah uap (steam dome)
+            rect(lx + 34, base - 27, 7, 4, colBodyMain);
+            rect(lx + 35, base - 28, 5, 1, colRoof);
+            // Cerobong asap (chimney) di lx+49
+            const chimneyX = lx + 50;
+            const chimneyTopY = base - 32;
+            rect(chimneyX - 2, chimneyTopY, 5, 9, colBodyDark);
+            rect(chimneyX - 3, chimneyTopY - 1, 7, 2, colRoof);
+            // Penepis rintangan depan (cowcatcher)
+            for (let row = 0; row < 6; row++) {
+                rect(lx + 57, base - 7 + row, row + 2, 1, colRoof);
+            }
+            // Lampu sorot depan lokomotif
+            rect(lx + 56, base - 21, 3, 4, colBodyTrim);
+            if (windowBrightness > 0.25) {
+                pset(lx + 59, base - 20, '#fff7bd');
+                pset(lx + 59, base - 19, '#fff7bd');
+                // Sorot kerucut lampu depan dengan Bayer dithering
+                const beamAlpha = windowBrightness * 0.65;
+                for (let bx = 1; bx <= 34; bx++) {
+                    const halfH = Math.floor(bx * 0.26) + 1;
+                    ditherOverlayRect(lx + 59 + bx, base - 19 - halfH, 1, halfH * 2 + 1, '#ffe48a', beamAlpha * (1 - bx / 38));
+                }
+            }
+
+            // Roda penggerak lokomotif & batang penghubung (connecting rod)
+            const wheelCenters = [lx + 12, lx + 26, lx + 40, lx + 52];
+            for (let w = 0; w < wheelCenters.length; w++) {
+                const wx = wheelCenters[w];
+                const r = w < 3 ? 4 : 3;
+                fillCircle(wx, base - r, r, colWheel);
+                pset(wx, base - r, colWheelRim);
+            }
+            const rodOffX = Math.round(Math.cos(wPhase) * 2);
+            const rodOffY = Math.round(Math.sin(wPhase) * 1.5);
+            line(lx + 12 + rodOffX, base - 4 + rodOffY, lx + 40 + rodOffX, base - 4 + rodOffY, colWheelRim);
+
+            // Asap tipis dari cerobong (thin smoke puffs)
+            if (smokeDensity > 0.05) {
+                const numPuffs = 14;
+                for (let p = 0; p < numPuffs; p++) {
+                    const age = ((t * 1.8 + p / numPuffs) % 1.0);
+                    const driftBack = Math.floor(age * 48 + Math.sin(age * 8 + p) * 2);
+                    const riseUp = Math.floor(age * 24 + Math.pow(age, 0.7) * 8);
+                    const px = chimneyX - driftBack;
+                    const py = chimneyTopY - 3 - riseUp;
+                    const rad = Math.floor(2 + age * 4.5);
+                    const puffCol = windowBrightness > 0.5 ? '#596a87' : '#d8e2f0';
+                    const density = clamp((1.0 - age) * 0.65 * smokeDensity, 0.08, 0.75);
+                    fillCircle(px, py, rad, puffCol, density);
+                }
+            }
+
+            // ---------------------------------------------------------------------
+            // 2. GERBONG PENUMPANG (3 Gerbong di belakang lokomotif)
+            // ---------------------------------------------------------------------
+            const carLen = 62;
+            const carGap = 5;
+            for (let c = 0; c < 3; c++) {
+                const cx = lx - (c + 1) * (carLen + carGap);
+                if (cx + carLen < -10 || cx > W + 10) continue;
+
+                // Sambungan antar gerbong
+                rect(cx + carLen, base - 9, carGap, 3, colUnder);
+
+                // Rangka bawah & roda bogie
+                rect(cx + 2, base - 7, carLen - 4, 4, colUnder);
+                fillCircle(cx + 11, base - 3, 3, colWheel);
+                fillCircle(cx + 19, base - 3, 3, colWheel);
+                fillCircle(cx + carLen - 19, base - 3, 3, colWheel);
+                fillCircle(cx + carLen - 11, base - 3, 3, colWheel);
+
+                // Badan gerbong
+                rect(cx, base - 25, carLen, 18, colBodyMain);
+                rect(cx, base - 25, carLen, 3, colBodyDark);
+                rect(cx, base - 10, carLen, 2, colBodyTrim);
+
+                // Atap melengkung bertingkat
+                rect(cx - 1, base - 27, carLen + 2, 2, colRoof);
+                rect(cx + 2, base - 28, carLen - 4, 1, colRoof);
+
+                // 4 Jendela per gerbong
+                for (let w = 0; w < 4; w++) {
+                    const wx = cx + 6 + w * 13;
+                    const wy = base - 21;
+                    rect(wx - 1, wy - 1, 11, 9, colWinFrame);
+                    rect(wx, wy, 9, 7, colWinMid);
+                    rect(wx + 1, wy + 1, 7, 5, colWinCore);
+
+                    // Siluet kecil penumpang & kucing di gerbong pertama jendela ke-2
+                    if (c === 0 && w === 1) {
+                        rect(wx + 1, wy + 3, 3, 4, '#241a29');
+                        rect(wx + 5, wy + 4, 2, 3, '#241a29');
+                    }
+                }
+            }
+        }
+
+        // Hujan Diagonal Berbasis Seed
+        function drawDiagonalRain(t, count, yMax, colBright, colDim, splashY = null) {
+            for (let i = 0; i < count; i++) {
+                const seed = 5000 + i * 131;
+                const speed = randRange(seed + 1, 190, 260);
+                const startX = randRange(seed + 2, 0, W + 120);
+                const startY = randRange(seed + 3, -H, 0);
+                const len = randInt(seed + 4, 7, 12);
+
+                const travel = (t * speed - startY);
+                const cycleH = yMax + 40;
+                const py = ((travel % cycleH) + cycleH) % cycleH - 15;
+                const px = Math.floor(((startX - travel * 0.34) % (W + 60) + (W + 60)) % (W + 60) - 20);
+                const iy = Math.floor(py);
+
+                const col = (i % 3 === 0) ? colBright : colDim;
+                const dx = -Math.max(2, Math.floor(len * 0.34));
+                line(px, iy, px + dx, iy + len, col);
+
+                // Percikan kecil di tanah/rel
+                if (splashY !== null && Math.abs(iy + len - splashY) <= 2) {
+                    pset(px + dx - 1, splashY - 1, colBright);
+                    pset(px + dx + 1, splashY - 1, colBright);
+                }
+            }
+        }
+
+        // =========================================================================
+        // ADEGAN 1 (0.0 - 4.0 dtk): KERETA MALAM DI PEDESAAN SAAT HUJAN + KILAT
+        // =========================================================================
+        function renderScene1(t) {
+            // Cek kilat kecil sekali sekitar t = 2.12s - 2.30s
+            const isLightning = (t >= 2.12 && t <= 2.30);
+            const flashStrength = isLightning ? (t < 2.20 ? 1.0 : 0.45) : 0.0;
+
+            // 1. Langit malam bertingkat (berubah sedikit terang saat kilat menyambar)
+            const skyBands = flashStrength > 0.6
+                ? ['#1c2847', '#25355c', '#304473', '#3d558c', '#4a66a3']
+                : (flashStrength > 0.1
+                    ? ['#121a30', '#182340', '#202e52', '#283a66', '#314678']
+                    : ['#080c17', '#0c1222', '#11192e', '#16213b', '#1d2b4a']);
+            drawSteppedSky(255, skyBands);
+            drawStars(150, isLightning ? 0.2 : 0.7);
+
+            // Awan badai malam di langit atas
+            const cloudShift = Math.floor(t * 6);
+            for (let c = 0; c < 7; c++) {
+                const cx = ((c * 52 - cloudShift) % (W + 60) + (W + 60)) % (W + 60) - 30;
+                const cy = 38 + (c % 3) * 18;
+                const colCloud = flashStrength > 0.5 ? '#485e8c' : '#121a2d';
+                const colRim = flashStrength > 0.5 ? '#9bb8eb' : '#1f2c47';
+                fillCircle(cx, cy, 18, colCloud);
+                fillCircle(cx + 14, cy + 3, 15, colCloud);
+                fillCircle(cx - 13, cy + 4, 13, colCloud);
+                rect(cx - 16, cy + 12, 34, 2, colRim);
+            }
+
+            // Kilat kecil sekali di kejauhan (x ~ 202, y = 44..185)
+            if (isLightning) {
+                const lx = 204;
+                line(lx, 44, lx - 6, 72, '#e6f2ff');
+                line(lx - 6, 72, lx + 3, 96, '#ffffff');
+                line(lx + 3, 96, lx - 9, 134, '#ffffff');
+                line(lx - 9, 134, lx - 2, 162, '#e6f2ff');
+                line(lx - 2, 162, lx - 11, 194, '#9ec3ff');
+                // Cabang kilat kecil
+                line(lx + 3, 96, lx + 14, 118, '#9ec3ff');
+                line(lx - 9, 134, lx - 20, 154, '#9ec3ff');
+            }
+
+            // 2. Parallax Lapis 1: Bukit Jauh (kecepatan lambat)
+            drawHillsLayer(
+                t * 12,
+                218,
+                22,
+                0.022,
+                flashStrength > 0.5 ? '#202d4a' : '#0e1526',
+                flashStrength > 0.5 ? '#5b76a8' : null
+            );
+            drawHillsLayer(
+                t * 20 + 80,
+                248,
+                15,
+                0.031,
+                flashStrength > 0.5 ? '#18233b' : '#0b101e',
+                null
+            );
+
+            // 3. Parallax Lapis 2: Pepohonan Pedesaan (kecepatan sedang)
+            drawTreesLayer(
+                t * 42,
+                304,
+                '#080b12',
+                '#0c1321',
+                flashStrength > 0.5 ? '#223654' : '#131f33',
+                flashStrength > 0.5 ? '#466796' : '#1b2c47'
+            );
+
+            // Tanah padang rumput malam & embung/genangan air di bawah rel
+            rect(0, 318, W, 162, '#070b13');
+            ditherRect(0, 318, W, 28, '#0c1321', '#070b13', 0.6);
+
+            // 4. Rel & Kereta Malam Melaju dari Kiri ke Kanan
+            const railY = 342;
+            drawRailwayTrack(t * 95, railY, true);
+
+            // Posisi ujung lokomotif bergerak dari kiri (x = 95) ke kanan (x = 325)
+            const locoFrontX = 95 + t * 57.5;
+            drawTrainSideView(locoFrontX, railY, t, 1.0, 1.0);
+
+            // Pantulan hangat lampu jendela kereta di genangan air sawah/pedesaan (y = 385..435)
+            rect(0, 378, W, 64, '#09101f');
+            for (let c = 0; c < 3; c++) {
+                const carX = Math.floor(locoFrontX - 64 - (c + 1) * 67);
+                for (let w = 0; w < 4; w++) {
+                    const wx = carX + 6 + w * 13;
+                    if (wx >= -10 && wx <= W + 10) {
+                        for (let ry = 382; ry < 426; ry += 2) {
+                            const jitter = Math.floor(Math.sin(ry * 0.7 + t * 12 + w) * 2);
+                            ditherOverlayRect(wx + jitter, ry, 8, 1, '#d98c32', 0.45);
+                        }
+                    }
+                }
+            }
+            // Siluet rumput gelap di tepi paling bawah
+            for (let x = 0; x < W; x += 2) {
+                const gh = 14 + (hashU32(x * 43) % 16);
+                rect(x, H - gh, 2, gh, '#04060b');
+            }
+
+            // 5. Parallax Lapis 3: Tiang Listrik Dekat (kecepatan cepat di depan)
+            drawUtilityPolesLayer(t * 105, 465, 168, '#05080f', '#182338', '#3e547a');
+
+            // 6. Hujan Jatuh Diagonal
+            drawDiagonalRain(t, 75, 465, '#7fa1c7', '#425b7a', railY);
+        }
+
+        // =========================================================================
+        // ADEGAN 2 (4.0 - 8.0 dtk): KAMERA MASUK KE JENDELA (PENUMPANG KECIL & KUCING)
+        // =========================================================================
+        function renderScene2(t) {
+            const localT = t - 4.0;
+            // Goyangan lembut suspensi gerbong kereta
+            const swayY = Math.round(Math.sin(localT * 3.2) * 1);
+
+            // 1. Dinding Kayu Interior Gerbong
+            rect(0, 0, W, H, '#211412');
+            // Tekstur papan kayu vertikal interior
+            for (let x = 0; x < W; x += 15) {
+                rect(x, 0, 1, H, '#170d0c');
+                rect(x + 1, 0, 1, H, '#2b1a17');
+            }
+            // Pendar hangat lampu dinding gerbong di atas
+            ditherRect(0, 0, W, 56, '#3b231b', '#211412', 0.45);
+            // Ornamen lampu kuningan di atas jendela (x = 135, y = 26)
+            rect(123, 14 + swayY, 24, 5, '#7a5229');
+            rect(127, 19 + swayY, 16, 9, '#ffb947');
+            rect(129, 20 + swayY, 12, 6, '#fff19e');
+
+            // 2. Bingkai Jendela Kereta Besar (x = 24..246, y = 64..328)
+            const winX = 26;
+            const winY = 66 + swayY;
+            const winW = 218;
+            const winH = 260;
+
+            // Lis bingkai kayu luar
+            rect(winX - 8, winY - 8, winW + 16, winH + 16, '#140b0a');
+            rect(winX - 6, winY - 6, winW + 12, winH + 12, '#3d241c');
+            rect(winX - 2, winY - 2, winW + 4, winH + 4, '#593629');
+
+            // 3. Pemandangan Malam di Luar Jendela yang Bergeser (Dibatasi Clip Jendela)
+            setClip(winX, winY, winW, winH);
+
+            // Langit malam di luar kaca
+            drawSteppedSky(winY + 170, ['#090e1c', '#0e1629', '#141f38', '#1b2947']);
+
+            // Bukit jauh bergeser di luar jendela
+            drawHillsLayer(t * 18, winY + 150, 18, 0.025, '#0d1424');
+
+            // Lampu rumah desa jauh yang lewat sesekali
+            for (let v = 0; v < 5; v++) {
+                const vx = ((v * 68 - Math.floor(t * 28)) % 320 + 320) % 320;
+                const vy = winY + 156 + (v % 2) * 8;
+                rect(vx, vy, 3, 2, '#ffbe4f');
+            }
+
+            // Pepohonan di luar jendela bergeser
+            drawTreesLayer(t * 58, winY + 210, '#070a10', '#0a101c', '#121d30', '#1a2a42');
+            rect(winX, winY + 210, winW, 60, '#070b13');
+
+            // Tiang listrik & kabel melintas cepat di luar jendela
+            drawUtilityPolesLayer(t * 145, winY + 260, winY + 45, '#05080e', '#172236', '#394f73');
+
+            // Hujan diagonal di luar kaca
+            drawDiagonalRain(t, 48, winY + winH, '#5b7a9e', '#364b63');
+
+            // Palang pemisah kaca jendela atas
+            rect(winX, winY + 62, winW, 4, '#2b1814');
+            rect(winX, winY + 63, winW, 1, '#4f3026');
+
+            // Tetesan air hujan meluncur di permukaan kaca (38 tetes berbasis seed)
+            for (let d = 0; d < 38; d++) {
+                const seed = 9000 + d * 97;
+                const speed = randRange(seed + 1, 16, 36);
+                const startY = randRange(seed + 2, 0, winH);
+                const baseX = randInt(seed + 3, winX + 6, winX + winW - 8);
+                const curY = winY + ((startY + localT * speed) % (winH - 8));
+                const wiggleX = Math.round(Math.sin(curY * 0.14 + d) * 1.3);
+                const dx = baseX + wiggleX;
+                const dy = Math.floor(curY);
+
+                // Jejak air tipis di atas tetesan
+                const trailLen = randInt(seed + 4, 5, 11);
+                for (let tr = 1; tr <= trailLen; tr++) {
+                    if ((tr & 1) === 0) pset(dx, dy - tr, '#283c59');
+                }
+                // Badan tetesan air & kilau cahaya
+                rect(dx - 1, dy, 2, 3, '#4e6e96');
+                pset(dx, dy + 1, '#b8dcff');
+                pset(dx - 1, dy - 1, '#20314a');
+            }
+
+            // Garis kilau kaca jendela tipis
+            line(winX + 14, winY + 18, winX + 34, winY - 2, '#24354f');
+            line(winX + 22, winY + 28, winX + 48, winY + 2, '#24354f');
+
+            resetClip();
+
+            // Ambang kayu bawah jendela (window sill)
+            const sillY = winY + winH;
+            rect(14, sillY, W - 28, 10, '#4f2f24');
+            rect(14, sillY, W - 28, 2, '#754836');
+            rect(14, sillY + 8, W - 28, 3, '#261510');
+
+            // 4. Kursi Beludru Kereta (Merah Marun Hangat)
+            const seatY = sillY + 11;
+            rect(10, seatY, 118, 130, '#591c2b');
+            rect(14, seatY + 4, 110, 120, '#732638');
+            rect(142, seatY, 118, 130, '#591c2b');
+            rect(146, seatY + 4, 110, 120, '#732638');
+            // Bantalan duduk
+            rect(8, seatY + 62, W - 16, 75, '#471521');
+            ditherRect(8, seatY + 62, W - 16, 12, '#692233', '#471521', 0.5);
+
+            // 5. KARAKTER 1: PENUMPANG KECIL (Duduk di kiri, menatap hujan di kaca)
+            // Bernapas lembut (naik turun 1 piksel)
+            const breath = Math.floor((Math.sin(localT * 2.6) + 1) * 0.7);
+            const px = 72;
+            const py = sillY - 46 + breath;
+
+            // Badan / Sweater kuning oker hangat
+            rect(px - 22, py + 32, 46, 56, '#c7822e');
+            rect(px - 18, py + 34, 38, 52, '#e0993e');
+            // Garis rajutan sweater
+            rect(px - 18, py + 48, 38, 3, '#9e601e');
+            rect(px - 18, py + 62, 38, 3, '#9e601e');
+
+            // Syal merah hangat di leher
+            rect(px - 16, py + 26, 34, 9, '#9e2835');
+            rect(px - 14, py + 27, 30, 6, '#c43545');
+            rect(px + 6, py + 33, 8, 18, '#b02e3d');
+            rect(px + 6, py + 49, 8, 2, '#f0d290');
+
+            // Lengan bertumpu di ambang jendela
+            rect(px - 6, py + 34, 28, 12, '#c7822e');
+            rect(px + 18, py + 36, 9, 8, '#f2bfa0'); // Tangan kecil di dekat kaca
+
+            // Kepala & wajah tampak samping-tiga perempat menghadap jendela/kanan atas
+            fillCircle(px, py + 10, 17, '#f2bfa0');
+            // Pipi merona hangat
+            rect(px + 8, py + 13, 4, 2, '#e08b7e');
+            // Mata penumpang kecil (berkedip lembut sekali pada t = 6.1..6.28)
+            const childBlink = (t >= 6.10 && t <= 6.28);
+            if (childBlink) {
+                rect(px + 7, py + 8, 5, 1, '#26171a');
+            } else {
+                rect(px + 7, py + 6, 4, 5, '#26171a');
+                pset(px + 9, py + 7, '#ffffff'); // Kilau mata menatap hujan
+            }
+
+            // Rambut pendek gelap dengan highlight hangat lampu kereta
+            fillCircle(px - 3, py + 6, 18, '#1d1824');
+            rect(px - 18, py - 6, 34, 12, '#1d1824');
+            rect(px - 19, py + 2, 16, 18, '#1d1824');
+            // Poni depan & highlight rambut
+            rect(px + 2, py - 4, 14, 8, '#1d1824');
+            rect(px - 8, py - 5, 14, 2, '#3d3247');
+            rect(px + 6, py + 9, 8, 12, '#f2bfa0'); // Buka area wajah samping
+
+            // Tampilan ulang mata & pipi di atas layer wajah
+            rect(px + 9, py + 15, 4, 2, '#e08b7e');
+            if (childBlink) {
+                rect(px + 8, py + 10, 5, 1, '#26171a');
+            } else {
+                rect(px + 8, py + 8, 4, 5, '#26171a');
+                pset(px + 10, py + 9, '#ffffff');
+            }
+
+            // 6. KARAKTER 2: KUCING DUDUK DI AMBANG/KURSI KANAN
+            const cx = 186;
+            const cy = sillY - 2;
+
+            // Badan kucing (oranye kemerahan hangat dengan belang gelap)
+            fillCircle(cx, cy - 16, 15, '#d46a35');
+            rect(cx - 14, cy - 18, 28, 20, '#d46a35');
+            fillCircle(cx - 2, cy - 15, 12, '#e88246');
+            // Belang punggung kucing
+            rect(cx + 4, cy - 24, 8, 2, '#9c431e');
+            rect(cx + 5, cy - 19, 9, 2, '#9c431e');
+            rect(cx + 4, cy - 14, 8, 2, '#9c431e');
+            // Kaki depan kucing rapi di ambang jendela
+            rect(cx - 12, cy - 2, 7, 5, '#f5dec4');
+            rect(cx - 3, cy - 2, 7, 5, '#f5dec4');
+
+            // Kepala kucing
+            const hcx = cx - 4;
+            const hcy = cy - 34;
+            fillCircle(hcx, hcy, 12, '#d46a35');
+            fillCircle(hcx - 1, hcy, 10, '#e88246');
+
+            // Telinga lancip kiri & kanan
+            for (let row = 0; row < 8; row++) {
+                const wEar = Math.max(1, 7 - row);
+                rect(hcx - 11 + Math.floor(row / 2), hcy - 9 - row, wEar, 1, '#c45b29');
+                rect(hcx + 4, hcy - 9 - row, wEar, 1, '#c45b29');
+                if (row < 5) {
+                    rect(hcx - 9 + Math.floor(row / 2), hcy - 8 - row, Math.max(1, wEar - 3), 1, '#e89587');
+                    rect(hcx + 5, hcy - 8 - row, Math.max(1, wEar - 3), 1, '#e89587');
+                }
+            }
+
+            // Mata kucing (Berkedip pada t = 4.85..5.10 dan t = 6.80..7.05)
+            const catBlink = (t >= 4.85 && t <= 5.10) || (t >= 6.80 && t <= 7.05);
+            if (catBlink) {
+                rect(hcx - 8, hcy - 1, 5, 1, '#24140e');
+                rect(hcx + 1, hcy - 1, 5, 1, '#24140e');
+            } else {
+                // Mata kuning-hijau bersinar hangat
+                rect(hcx - 8, hcy - 3, 5, 5, '#a8e05a');
+                rect(hcx + 1, hcy - 3, 5, 5, '#a8e05a');
+                // Pupil vertikal
+                rect(hcx - 6, hcy - 2, 2, 4, '#1c120e');
+                rect(hcx + 3, hcy - 2, 2, 4, '#1c120e');
+                // Highlight mata kucing
+                pset(hcx - 7, hcy - 2, '#ffffff');
+                pset(hcx + 2, hcy - 2, '#ffffff');
+            }
+
+            // Hidung pink & kumis kucing
+            rect(hcx - 2, hcy + 3, 3, 2, '#f08d86');
+            line(hcx - 10, hcy + 3, hcx - 15, hcy + 2, '#f5dec4');
+            line(hcx - 10, hcy + 5, hcx - 15, hcy + 6, '#f5dec4');
+            line(hcx + 7, hcy + 3, hcx + 12, hcy + 2, '#f5dec4');
+
+            // Ekor kucing bergoyang pelan (multi-segmen)
+            const tailBaseX = cx + 12;
+            const tailBaseY = cy - 2;
+            const tailWave = Math.sin(localT * 2.4);
+            for (let seg = 0; seg < 12; seg++) {
+                const u = seg / 11;
+                const bend = Math.round(Math.sin(u * 2.1 + localT * 2.4) * (9 * u) + tailWave * 4 * u);
+                const sx = tailBaseX + bend + Math.round(u * 5);
+                const sy = tailBaseY + seg * 3;
+                fillCircle(sx, sy, 3, seg > 9 ? '#f5dec4' : '#c45b29');
+                pset(sx - 1, sy, '#e88246');
+            }
+        }
+
+        // =========================================================================
+        // ADEGAN 3 (8.0 - 12.0 dtk): HUJAN MEREDA, AWAN TERBUKA, FAJAR & KABUT
+        // =========================================================================
+        function renderScene3(t) {
+            const localT = t - 8.0;
+            const p = clamp(localT / 4.0, 0.0, 1.0); // 0.0 -> 1.0 sepanjang 8..12 dtk
+
+            // 1. Langit berubah bertahap dari biru tua -> ungu -> oranye (Stepped Pixel Palette)
+            let skyBands;
+            if (p < 0.25) {
+                // Tahap 1: Biru tua malam ke nila fajar awal
+                skyBands = ['#0d152b', '#152244', '#1f3161', '#2c3d75', '#3d4885', '#525291'];
+            } else if (p < 0.50) {
+                // Tahap 2: Biru tua ke ungu senja/fajar
+                skyBands = ['#1a183b', '#2c2257', '#442d73', '#613987', '#824994', '#a65e99'];
+            } else if (p < 0.75) {
+                // Tahap 3: Ungu ke magenta & semburat oranye
+                skyBands = ['#2b204f', '#4c2c69', '#753978', '#a34b75', '#cf6863', '#eb9257'];
+            } else {
+                // Tahap 4: Ungu lembut ke oranye keemasan fajar
+                skyBands = ['#382c5e', '#633c73', '#964f73', '#c96b61', '#ed9353', '#f7be5e', '#ffe382'];
+            }
+            drawSteppedSky(285, skyBands);
+
+            // Bintang memudar di awal fajar
+            if (p < 0.45) {
+                drawStars(110, (0.45 - p) * 1.4);
+            }
+
+            // 2. Matahari Terbit di Antara Bukit (di tengah lembah x = 135)
+            const sunX = 135;
+            const sunY = Math.round(290 - p * 84); // Naik dari y=290 (tersembunyi) ke y=206
+            const sunR = 23;
+
+            // Halo matahari dengan Ordered Bayer Dithering
+            if (p > 0.15) {
+                fillCircle(sunX, sunY, sunR + 18, '#f59c4e', 0.25);
+                fillCircle(sunX, sunY, sunR + 9, '#ffbf5e', 0.50);
+            }
+            // Inti matahari pixel bertingkat
+            fillCircle(sunX, sunY, sunR, '#ff9d3b');
+            fillCircle(sunX, sunY, sunR - 4, '#ffc957');
+            fillCircle(sunX, sunY, sunR - 9, '#fff199');
+
+            // 3. Awan Terbuka ke Kiri dan Kanan
+            const partDist = Math.floor(p * 96);
+            const colCloudDark = p < 0.5 ? '#231f42' : '#4a325c';
+            const colCloudGold = p < 0.5 ? '#7c4d87' : '#f29b52';
+
+            // Gugusan awan kiri (bergeser ke kiri menjauhi tengah)
+            for (let i = 0; i < 4; i++) {
+                const cx = 105 - i * 28 - partDist;
+                const cy = 62 + (i % 2) * 14;
+                fillCircle(cx, cy, 20, colCloudDark);
+                fillCircle(cx + 10, cy + 5, 14, colCloudDark);
+                rect(cx - 14, cy + 14, 28, 3, colCloudGold);
+            }
+            // Gugusan awan kanan (bergeser ke kanan menjauhi tengah)
+            for (let i = 0; i < 4; i++) {
+                const cx = 165 + i * 28 + partDist;
+                const cy = 58 + ((i + 1) % 2) * 15;
+                fillCircle(cx, cy, 20, colCloudDark);
+                fillCircle(cx - 10, cy + 5, 14, colCloudDark);
+                rect(cx - 14, cy + 14, 28, 3, colCloudGold);
+            }
+
+            // 4. Dua Bukit Mengapit Lembah Tempat Matahari Terbit
+            const colHillFar = p < 0.5 ? '#201b3d' : '#382952';
+            const colHillNear = p < 0.5 ? '#15142e' : '#261d3d';
+            const colHillRim = p < 0.4 ? '#6e4578' : '#e68a49';
+
+            for (let x = 0; x < W; x++) {
+                // Profil lembah V-halus di tengah (x = 135 adalah titik terendah lembah)
+                const distCenter = Math.abs(x - 135) / 135;
+                const valleyProfile = Math.pow(distCenter, 1.35) * 68;
+                const wave = Math.sin(x * 0.045 + t * 0.25) * 6;
+                const topY = Math.floor(274 - valleyProfile - wave);
+
+                rect(x, topY, 1, H - topY, colHillFar);
+                if (Math.abs(x - 135) < 85 && p > 0.25) {
+                    pset(x, topY, colHillRim);
+                    pset(x, topY + 1, colHillRim);
+                }
+            }
+
+            // Bukit lapis kedua di sisi kiri & kanan lembah
+            for (let x = 0; x < W; x++) {
+                const distCenter = Math.abs(x - 135) / 135;
+                const ridge = Math.max(0, distCenter - 0.18) * 58;
+                const wave2 = Math.cos(x * 0.06 - t * 0.35) * 5;
+                const topY2 = Math.floor(292 - ridge - wave2);
+                rect(x, topY2, 1, H - topY2, colHillNear);
+            }
+
+            // 5. Kabut Tipis di Lembah (Bayer Dithering Berlapis)
+            const fogCol1 = p < 0.5 ? '#75598f' : '#e8a97d';
+            const fogCol2 = p < 0.5 ? '#9c78ad' : '#f7cfa6';
+            const fogShift = Math.floor(localT * 10);
+
+            for (let band = 0; band < 3; band++) {
+                const fy = 272 + band * 14;
+                const fh = 11;
+                for (let x = 0; x < W; x++) {
+                    const wave = Math.sin((x + fogShift * (band + 1)) * 0.05 + band) * 3;
+                    const curY = Math.floor(fy + wave);
+                    ditherOverlayRect(x, curY, 1, fh, band === 1 ? fogCol2 : fogCol1, 0.32);
+                }
+            }
+
+            // 6. Pepohonan Pedesaan di Bawah Kabut
+            drawTreesLayer(
+                t * 36,
+                326,
+                '#141021',
+                p < 0.5 ? '#191830' : '#24213b',
+                p < 0.5 ? '#262747' : '#383657',
+                p < 0.5 ? '#43436e' : '#736275'
+            );
+
+            // Lereng bawah & Rel Kereta
+            rect(0, 336, W, H - 336, p < 0.5 ? '#121324' : '#1f2133');
+            const railY = 358;
+            drawRailwayTrack(t * 85, railY, p < 0.6);
+
+            // 7. Kereta Melaju & Lampu Jendela Meredup Seiring Langit Terang
+            const windowBrightness = clamp(1.0 - p * 0.85, 0.15, 1.0);
+            const locoFrontX = 90 + localT * 52;
+            drawTrainSideView(locoFrontX, railY, t, windowBrightness, 0.85);
+
+            // Rumput siluet depan
+            for (let x = 0; x < W; x += 2) {
+                const gh = 16 + (hashU32(x * 61) % 14);
+                rect(x, H - gh, 2, gh, '#0d0e1a');
+            }
+
+            // 8. Hujan Mereda pada 8.0s - 9.2s (Jumlah tetes turun ke 0)
+            if (localT < 1.2) {
+                const rainCount = Math.floor((1.0 - localT / 1.2) * 36);
+                if (rainCount > 0) {
+                    drawDiagonalRain(t, rainCount, 460, '#8ba6c9', '#536b8a', railY);
+                }
+            }
+        }
+
+        // =========================================================================
+        // ADEGAN 4 (12.0 - 15.0 dtk): TIBA DI STASIUN PAGI, REM & UAP, TEKS "SAMPAI"
+        // =========================================================================
+        function renderScene4(t) {
+            const localT = t - 12.0;
+
+            // 1. Langit Pagi Cerah dan Hangat (Stepped Pixel Art)
+            drawSteppedSky(280, [
+                '#4b6496',
+                '#697da8',
+                '#8c94b5',
+                '#b8a3b0',
+                '#deb59e',
+                '#f5ce93',
+                '#ffe8a3'
+            ]);
+
+            // Matahari pagi bersinar di langit kanan atas
+            const sunX = 216, sunY = 126;
+            fillCircle(sunX, sunY, 24, '#ffd470', 0.35);
+            fillCircle(sunX, sunY, 16, '#ffe185');
+            fillCircle(sunX, sunY, 11, '#fff6bf');
+
+            // Bukit pagi hijau-kebiruan di kejauhan
+            drawHillsLayer(220, 238, 18, 0.02, '#4f5e7d', '#8492ad');
+            drawHillsLayer(410, 264, 12, 0.03, '#3b4b66', null);
+
+            // Pepohonan pagi di belakang stasiun
+            drawTreesLayer(120, 314, '#2e2220', '#263847', '#38525e', '#5c7d78');
+
+            // Tanah halaman stasiun
+            rect(0, 314, W, H - 314, '#243038');
+
+            // 2. Bangunan Stasiun Kecil Pedesaan (x = 68..256)
+            const stX = 72;
+            const platY = 338;
+
+            // Peron batu stasiun (platform)
+            rect(44, platY - 12, 218, 14, '#6e707a');
+            rect(44, platY - 12, 218, 3, '#9ea1ab'); // Garis tepi peron terang
+            rect(44, platY - 10, 218, 1, '#e6b84f'); // Garis kuning pengaman peron
+
+            // Dinding bata hangat rumah stasiun (x = 96..226, y = 266..326)
+            rect(96, 266, 130, 60, '#9e5342');
+            ditherRect(96, 266, 130, 60, '#9e5342', '#b5654e', 0.35);
+            // Pondasi bawah dinding stasiun
+            rect(94, 318, 134, 8, '#544e57');
+
+            // Pintu kayu & jendela stasiun
+            rect(148, 284, 20, 42, '#472922');
+            rect(151, 287, 14, 16, '#87b0cc'); // Kaca pintu
+            rect(110, 282, 24, 22, '#3d231d');
+            rect(113, 285, 18, 16, '#9ec4de'); // Jendela kiri
+            rect(182, 282, 28, 22, '#3d231d');
+            rect(185, 285, 22, 16, '#9ec4de'); // Jendela kanan (loket)
+
+            // Atap genteng stasiun bertingkat
+            for (let row = 0; row < 22; row++) {
+                const overhang = 22 - row;
+                const ry = 246 + row;
+                const colTile = (row % 3 === 0) ? '#4f282e' : '#6b353c';
+                rect(92 - Math.floor(overhang * 0.8), ry, 138 + Math.floor(overhang * 1.6), 1, colTile);
+            }
+            // Kanopi peron & tiang penyangga kayu
+            rect(56, 268, 198, 5, '#422227');
+            rect(54, 266, 202, 2, '#7d4248');
+            const pillars = [66, 102, 140, 176, 214, 244];
+            for (const px of pillars) {
+                rect(px, 273, 4, 53, '#4f3128');
+                rect(px + 1, 273, 1, 53, '#73493b');
+            }
+
+            // Jam bulat stasiun & bangku kayu peron
+            fillCircle(158, 275, 6, '#3b231d');
+            fillCircle(158, 275, 4, '#fff5d6');
+            pset(158, 275, '#1f1412');
+            pset(158, 273, '#1f1412');
+            pset(160, 275, '#1f1412');
+
+            // Bangku tunggu di peron kiri
+            rect(68, 316, 22, 4, '#8c583a');
+            rect(68, 320, 22, 3, '#5c3724');
+            rect(70, 323, 3, 4, '#2b1b14');
+            rect(85, 323, 3, 4, '#2b1b14');
+
+            // 3. Rel & Kereta Melambat Lalu Berhenti (t = 12.0s .. 13.4s)
+            const railY = 352;
+            drawRailwayTrack(0, railY, false);
+
+            // Kurva deselerasi mulus (ease-out cubic) hingga berhenti total pada localT = 1.40s (t = 13.4s)
+            const stopDuration = 1.40;
+            const u = clamp(localT / stopDuration, 0.0, 1.0);
+            const eased = 1.0 - Math.pow(1.0 - u, 3);
+            const locoFrontX = 148 + eased * 94; // Berhenti tepat di x = 242 di depan stasiun
+            const wheelPhase = eased * 14.5;
+
+            // Asap cerobong menipis saat kereta berhenti
+            drawTrainSideView(locoFrontX, railY, t, 0.15, 0.45, wheelPhase);
+
+            // 4. Uap dari Rem di Bawah Roda Saat Mengerem & Berhenti (t = 12.7s .. 14.4s)
+            if (localT >= 0.70 && localT <= 2.45) {
+                const steamProgress = (localT - 0.70) / 1.75;
+                const brakePoints = [
+                    locoFrontX - 18,
+                    locoFrontX - 42,
+                    locoFrontX - 88,
+                    locoFrontX - 126,
+                    locoFrontX - 155
+                ];
+                for (let b = 0; b < brakePoints.length; b++) {
+                    const bx = Math.floor(brakePoints[b]);
+                    for (let p = 0; p < 5; p++) {
+                        const seed = 14000 + b * 37 + p * 19;
+                        const delay = (p * 0.11) + (b * 0.04);
+                        const puffAge = (steamProgress - delay) * 1.45;
+                        if (puffAge > 0.0 && puffAge < 1.0) {
+                            const dir = (p % 2 === 0 ? 1 : -1);
+                            const spreadX = Math.floor(dir * puffAge * randRange(seed, 8, 22));
+                            const riseY = Math.floor(puffAge * randRange(seed + 1, 6, 16));
+                            const rad = Math.floor(2 + puffAge * 5);
+                            const density = clamp((1.0 - puffAge) * 0.85, 0.1, 0.85);
+                            const colSteam = puffAge < 0.4 ? '#ffffff' : '#d5e2f2';
+                            fillCircle(bx + spreadX, railY - 3 - riseY, rad, colSteam, density);
+                        }
+                    }
+                }
+            }
+
+            // Taman bunga kecil & pagar kayu di bagian bawah layar (y = 374..480)
+            rect(0, 366, W, H - 366, '#1d2b28');
+            ditherRect(0, 366, W, 18, '#2b4039', '#1d2b28', 0.5);
+            for (let x = 8; x < W - 8; x += 18) {
+                rect(x, 384, 3, 18, '#593e2e');
+                rect(x, 382, 3, 2, '#7d5943');
+            }
+            rect(0, 388, W, 2, '#473124');
+            rect(0, 396, W, 2, '#473124');
+
+            // 5. TEKS PIXEL "SAMPAI" (EFEK KETIK) + IKON MATAHARI BERKEDIP
+            // Muncul mulai t = 13.45s (localT >= 1.45s)
+            if (localT >= 1.45) {
+                const word = "SAMPAI";
+                const charInterval = 0.14; // 1 huruf tiap 0.14 detik
+                const typedCount = clamp(Math.floor((localT - 1.45) / charInterval) + 1, 0, word.length);
+                const visibleText = word.slice(0, typedCount);
+
+                // Panel bingkai langit agar teks 100% terbaca tajam dan utuh (x = 52..218, y = 52..98)
+                rect(50, 50, 170, 48, '#1d243b');
+                rect(52, 52, 166, 44, '#2c3659');
+                rect(54, 54, 162, 40, '#1d243b');
+                // Ornamen sudut keemasan
+                rect(52, 52, 4, 4, '#ffd470');
+                rect(214, 52, 4, 4, '#ffd470');
+                rect(52, 92, 4, 4, '#ffd470');
+                rect(214, 92, 4, 4, '#ffd470');
+
+                // Teks "SAMPAI" skala 3x (setiap huruf 15x21 piksel, spasi 3px -> stride 18px)
+                // Posisi x = 64..169, y = 63..84
+                drawPixelText(visibleText, 64, 63, 3, '#fff3b0', '#0f1324');
+
+                // Ikon kecil Matahari di sebelah kanan teks "SAMPAI" yang berkedip setelah ketikan selesai
+                if (localT >= 2.25) {
+                    // Berkedip 4 Hz (menyala terang / redup bergantian)
+                    const blinkPhase = Math.floor((localT - 2.25) * 7.5);
+                    const isBlinkOn = (blinkPhase % 2 === 0) || (localT >= 2.82);
+
+                    const icx = 192;
+                    const icy = 74;
+
+                    if (isBlinkOn) {
+                        // Inti matahari berkedip terang
+                        fillCircle(icx, icy, 6, '#ffb838');
+                        fillCircle(icx, icy, 4, '#fff3a1');
+                        // 8 Sinar matahari pixel
+                        rect(icx - 1, icy - 11, 2, 3, '#ffe070'); // Atas
+                        rect(icx - 1, icy + 8, 2, 3, '#ffe070'); // Bawah
+                        rect(icx - 11, icy - 1, 3, 2, '#ffe070'); // Kiri
+                        rect(icx + 8, icy - 1, 3, 2, '#ffe070'); // Kanan
+                        // Sinar diagonal
+                        rect(icx - 8, icy - 8, 2, 2, '#ffb838');
+                        rect(icx + 6, icy - 8, 2, 2, '#ffb838');
+                        rect(icx - 8, icy + 6, 2, 2, '#ffb838');
+                        rect(icx + 6, icy + 6, 2, 2, '#ffb838');
+                    } else {
+                        // Fase kedip redup/kecil
+                        fillCircle(icx, icy, 4, '#8c693e');
+                        fillCircle(icx, icy, 2, '#cfa157');
+                    }
+                }
+            }
+        }
+
+        // =========================================================================
+        // TRANSISI ANTAR ADEGAN MULUS (DITHER WIPE TANPA FRAME KOSONG)
+        // =========================================================================
+        function applySceneTransition(t) {
+            // Transisi lembut 4 frame di sekitar batas adegan (4.0s, 8.0s, 12.0s) menggunakan Bayer Dither
+            const boundaries = [4.0, 8.0, 12.0];
+            const halfSpan = 0.12; // +-0.12 detik
+            for (const b of boundaries) {
+                const dist = Math.abs(t - b);
+                if (dist < halfSpan) {
+                    const strength = (1.0 - dist / halfSpan) * 0.55;
+                    const col = (b === 12.0) ? '#3b2d54' : '#0b1020';
+                    ditherOverlayRect(0, 0, W, H, col, strength);
+                }
+            }
+        }
+
+        // =========================================================================
+        // FUNGSI UTAMA: drawFrame(t)
+        // =========================================================================
+        window.drawFrame = function (t) {
+            const clampedT = clamp(t, 0.0, 15.0);
+            resetClip();
+
+            if (clampedT < 4.0) {
+                renderScene1(clampedT);
+            } else if (clampedT < 8.0) {
+                renderScene2(clampedT);
+            } else if (clampedT < 12.0) {
+                renderScene3(clampedT);
+            } else {
+                renderScene4(clampedT);
+            }
+
+            applySceneTransition(clampedT);
+
+            // Flush buffer 270x480 ke kanvas internal, lalu gambar 4x Nearest-Neighbor ke 1080x1920
+            lowCtx.putImageData(imgData, 0, 0);
+            screenCtx.imageSmoothingEnabled = false;
+            screenCtx.drawImage(lowCanvas, 0, 0, W * SCALE, H * SCALE);
+        };
+
+        // Mode pratinjau otomatis jika dibuka langsung di browser biasa
+        if (!navigator.webdriver) {
+            let startTs = null;
+            function loop(ts) {
+                if (!startTs) startTs = ts;
+                const elapsed = ((ts - startTs) / 1000) % 15.0;
+                window.drawFrame(elapsed);
+                requestAnimationFrame(loop);
+            }
+            requestAnimationFrame(loop);
+        } else {
+            window.drawFrame(0);
+        }
+    </script>
+</body>
+
+</html>

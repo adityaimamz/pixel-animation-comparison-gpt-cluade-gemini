@@ -1,0 +1,11 @@
+{
+  "name": "kereta-malam-fajar-pixelart",
+  "version": "1.0.0",
+  "description": "Animasi Pixel Art Vertikal 15 Detik - Kereta Malam Menuju Fajar",
+  "scripts": {
+    "render": "node render.js"
+  },
+  "dependencies": {
+    "playwright": "^1.48.0"
+  }
+}

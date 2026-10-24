@@ -1,0 +1,84 @@
+{
+  "width": 270,
+  "height": 480,
+  "outputWidth": 1080,
+  "outputHeight": 1920,
+  "fps": 30,
+  "frames": 450,
+  "duration": 15,
+  "seed": 5904329,
+  "renderer": "Playwright headless Chromium; Canvas 2D only",
+  "chromium_version": "138.0.7204.0",
+  "video": {
+    "width": 1080,
+    "height": 1920,
+    "frames": 450,
+    "fps": "30/1",
+    "duration": 15,
+    "pixel_format": "yuv420p"
+  },
+  "audio": {
+    "codec": "aac",
+    "sample_rate": 48000,
+    "channels": 2,
+    "duration": 15
+  },
+  "container_duration": 15,
+  "deterministic_samples": [
+    {
+      "time": 2,
+      "sha256": "5069db609b2fa9a3f14e95372da55418016c412277a0dc9a359493dd433446b3",
+      "repeat_identical": true
+    },
+    {
+      "time": 6,
+      "sha256": "76362c7a8c95b7759c11d6fc7fe6c8947654a038442a28181ea75c1cc04a5d0b",
+      "repeat_identical": true
+    },
+    {
+      "time": 10.8,
+      "sha256": "d63dcfefe624738fd064b72cf8dc9da08abd5e4172f2e96ef5c8cd856f1e5bf8",
+      "repeat_identical": true
+    },
+    {
+      "time": 14.8,
+      "sha256": "d496a26f2e79edb80d86887778e9d571d51516548a5ae7e0e6249bc5a7246ea6",
+      "repeat_identical": true
+    }
+  ],
+  "browser_errors": [],
+  "note": "PNG masters use exact 4x nearest-neighbor pixels; H.264/AAC are lossy delivery codecs.",
+  "visual_audit": {
+    "png_count": 450,
+    "blank_frames": [],
+    "nearest_neighbor_exact_on_9_samples": true,
+    "max_consecutive_mean_luma_change_0_to_255": 7.279055337962959,
+    "max_luma_change_at_seconds": 3.7666666666666666,
+    "manually_inspected_scene_times": [
+      2,
+      6,
+      10.8,
+      14.8
+    ],
+    "manually_inspected_transitions": true,
+    "main_subjects_and_SAMPAI_within_frame": true,
+    "train_stops_at_seconds": 14,
+    "text_starts_after_seconds": 14.02
+  },
+  "audio_audit": {
+    "integrated_loudness_lufs": -13.4,
+    "true_peak_dbfs": -1.8,
+    "clipping": false,
+    "wav": {
+      "sample_rate": 48000,
+      "channels": 2,
+      "samples_per_channel": 720000,
+      "duration": 15.0,
+      "peak_pcm": 27196,
+      "rms": 0.16216165390318085,
+      "seed": "0x714bc23",
+      "external_audio_assets": 0
+    }
+  },
+  "video_sha256": "98dc7e79a894c1784cfc500fd20e3a213f8668e211552028bc27e0750349e425"
+}

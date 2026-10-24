@@ -1,0 +1,16 @@
+{
+  "name": "kereta-malam-claude",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Kereta malam menembus hujan lalu tiba saat fajar: pixel art vertikal 15 s, Canvas2D murni, audio sintetis.",
+  "scripts": {
+    "audio": "node tools/audio.mjs",
+    "stills": "node tools/stills.mjs",
+    "check": "node tools/check.mjs",
+    "render": "node tools/audio.mjs && node tools/render.mjs"
+  },
+  "dependencies": {
+    "playwright": "1.63.0"
+  }
+}
